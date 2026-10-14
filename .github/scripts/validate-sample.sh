@@ -57,6 +57,7 @@ MODE="build-readiness"
 LIVE_SERVICE_VALIDATION_DECLARED=""
 SAMPLE_YAML_FAIL_STEP=""
 PYTHON_VENV_DIR=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 usage() {
     cat <<'EOF'
@@ -372,10 +373,242 @@ cleanup_python_venv() {
 #   live_service_validation:
 #     command: "<credentialed runtime assertion>"
 #     required_env: [OPTIONAL_ENV_NAME, ...]  # optional
+#     cleanup_resources:                     # optional
+#       - type: foundry_agent_versions
+#     substitutions:                         # optional
+#       - file: "relative/sample-file.py"
+#         replacements:
+#           - placeholder: "your_project_endpoint"
+#             env: AZURE_AI_PROJECT_ENDPOINT
+#           - placeholder: "your-agent-name"
+#             generate: unique_name
 #
 # The caller owns authentication and configuration. This script never provisions, logs in,
 # or invents defaults: it inherits the caller environment and requires the caller to set
 # SKIP_PROVISION to exactly true or false. A missing declaration is a successful no-op.
+#
+# `generate: unique_name` needs no caller wiring: this script generates one
+# run-unique name per sample invocation (GENERATED_RESOURCE_NAME below) and
+# substitutes it wherever a replacement asks for `generate: unique_name`. A
+# `cleanup_resources` declaration reuses that same name, so a sample author
+# never has to invent, plumb through the workflow, or declare an env var for it.
+GENERATE_UNIQUE_NAME_USED=false
+GENERATED_RESOURCE_NAME=""
+
+generate_unique_resource_name() {
+    local base sanitized path_hash run_id
+    # Use the full sample path (not just its basename) so parallel matrix
+    # entries for the same sample name in different languages (for example
+    # samples/{python,java,csharp,typescript}/quickstart/chat-with-agent)
+    # don't collapse onto the same generated-name prefix.
+    base="$SAMPLE_DIR"
+    # Lowercase, replace anything unsafe for a resource name with '-', collapse
+    # runs of '-', and trim leading/trailing '-'.
+    sanitized="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')"
+    sanitized="$(printf '%s' "$sanitized" | sed -E 's/-+/-/g; s/^-+//; s/-+$//')"
+    [ -n "$sanitized" ] || sanitized="sample"
+    # Truncate the sanitized base for readability only; a checksum of the
+    # full (untruncated) sample path is included below so two samples can't
+    # collide just because truncation made their prefixes match.
+path_hash="$(printf '%s' "$base" | cksum | cut -d' ' -f1)"
+    sanitized="${sanitized:0:12}"
+    # Include the workflow run id/attempt (falling back to "local" for
+    # non-Actions invocations) so a $RANDOM collision between two concurrent
+    # runs of the same sample can't let one job snapshot or clean up
+    # another job's resources.
+    run_id="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
+    printf 'validation-%s-%s-%s-%s' "$sanitized" "$path_hash" "$run_id" "$RANDOM"
+}
+
+escape_bash_pattern_literal() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\*/\\*}"
+    value="${value//\?/\\?}"
+    value="${value//\[/\\[}"
+    value="${value//\]/\\]}"
+    value="${value//\(/\\(}"
+    value="${value//\)/\\)}"
+    value="${value//@/\\@}"
+    value="${value//\!/\\!}"
+    value="${value//+/\\+}"
+    value="${value//|/\\|}"
+    printf '%s' "$value"
+}
+
+apply_live_service_substitutions() {
+    local yaml="$SAMPLE_DIR/sample.yaml"
+    if [ "$(yq eval '.live_service_validation | has("substitutions")' "$yaml" 2>/dev/null)" != "true" ]; then
+        return 0
+    fi
+
+    local substitutions_kind substitutions_count i substitution_kind file_tag file replacement_count replacements_kind
+    local resolved_sample_root resolved_dir target_file
+    substitutions_kind="$(yq eval '.live_service_validation.substitutions | kind' "$yaml" 2>/dev/null)" ||
+        error "failed to read sample.yaml live_service_validation.substitutions: $yaml"
+    [ "$substitutions_kind" = "seq" ] ||
+        error "sample.yaml live_service_validation.substitutions must be a list"
+    substitutions_count="$(yq eval '.live_service_validation.substitutions | length' "$yaml" 2>/dev/null)" ||
+        error "failed to read sample.yaml live_service_validation.substitutions: $yaml"
+
+    resolved_sample_root="$(cd "$SAMPLE_DIR" 2>/dev/null && pwd -P)" ||
+        error "failed to resolve sample directory: $SAMPLE_DIR"
+
+    # Preflight: every replacement is validated and applied in memory first, so a
+    # later invalid replacement can never leave the checkout partially rewritten.
+    # Parallel indexed arrays (not an associative array) keep this loop working on
+    # Bash 3.2, which is still the default shell on macOS.
+    local -a pending_paths=()
+    local -a pending_contents=()
+    local slot pending_index pending_count=0
+
+    i=0
+    while [ "$i" -lt "$substitutions_count" ]; do
+        substitution_kind="$(yq eval ".live_service_validation.substitutions[$i] | kind" "$yaml" 2>/dev/null)" ||
+            error "failed to read sample.yaml live_service_validation.substitutions[$i]: $yaml"
+        [ "$substitution_kind" = "map" ] ||
+            error "sample.yaml live_service_validation.substitutions[$i] must be a mapping"
+
+        file_tag="$(yq eval ".live_service_validation.substitutions[$i].file | tag" "$yaml" 2>/dev/null)" ||
+            error "failed to read sample.yaml live_service_validation.substitutions[$i].file: $yaml"
+        [ "$file_tag" = "!!str" ] ||
+            error "sample.yaml live_service_validation.substitutions[$i].file must be a non-empty string"
+        file="$(yq eval ".live_service_validation.substitutions[$i].file" "$yaml" 2>/dev/null)" ||
+            error "failed to read sample.yaml live_service_validation.substitutions[$i].file: $yaml"
+        printf '%s' "$file" | grep -q '[^[:space:]]' ||
+            error "sample.yaml live_service_validation.substitutions[$i].file must be a non-empty string"
+        case "$file" in
+            /*|*../*|../*|*/..|..|".") error "sample.yaml live_service_validation.substitutions[$i].file must stay inside the sample directory: $file" ;;
+        esac
+        [ -f "$SAMPLE_DIR/$file" ] ||
+            error "sample.yaml live_service_validation.substitutions[$i].file does not exist or is not a regular file: $file"
+        [ ! -L "$SAMPLE_DIR/$file" ] ||
+            error "sample.yaml live_service_validation.substitutions[$i].file must not be a symlink: $file"
+        resolved_dir="$(cd "$(dirname "$SAMPLE_DIR/$file")" 2>/dev/null && pwd -P)" ||
+            error "sample.yaml live_service_validation.substitutions[$i].file resolves outside the sample directory: $file"
+        case "$resolved_dir" in
+            "$resolved_sample_root"|"$resolved_sample_root"/*) ;;
+            *) error "sample.yaml live_service_validation.substitutions[$i].file resolves outside the sample directory: $file" ;;
+        esac
+        target_file="$resolved_dir/$(basename "$file")"
+        [ -r "$target_file" ] ||
+            error "sample.yaml live_service_validation.substitutions[$i].file is not readable: $file"
+
+        replacements_kind="$(yq eval ".live_service_validation.substitutions[$i].replacements | kind" "$yaml" 2>/dev/null)" ||
+            error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements: $yaml"
+        [ "$replacements_kind" = "seq" ] ||
+            error "sample.yaml live_service_validation.substitutions[$i].replacements must be a list"
+        replacement_count="$(yq eval ".live_service_validation.substitutions[$i].replacements | length" "$yaml" 2>/dev/null)" ||
+            error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements: $yaml"
+        [ "$replacement_count" -gt 0 ] ||
+            error "sample.yaml live_service_validation.substitutions[$i].replacements must not be empty"
+
+        slot=""
+        pending_index=0
+        while [ "$pending_index" -lt "$pending_count" ]; do
+            if [ "${pending_paths[$pending_index]}" = "$target_file" ]; then
+                slot="$pending_index"
+                break
+            fi
+            pending_index=$((pending_index + 1))
+        done
+        if [ -z "$slot" ]; then
+            local content=""
+            # Shell strings cannot carry NUL bytes, so a binary file is rejected rather
+            # than silently truncated at its first NUL when the rewrite is written back.
+            tr -d '\000' <"$target_file" | cmp -s - "$target_file" ||
+                error "sample.yaml live_service_validation.substitutions[$i].file is not a NUL-free text file: $file"
+            # read exits non-zero at EOF without a NUL delimiter, which is the normal
+            # case for a text file; the whole file is still captured in "$content".
+            IFS= read -r -d '' content <"$target_file" || true
+            slot="$pending_count"
+            pending_paths+=("$target_file")
+            pending_contents+=("$content")
+            pending_count=$((pending_count + 1))
+        fi
+
+        local j replacement_kind placeholder_tag placeholder placeholder_pattern env_tag env_name env_value
+        j=0
+        while [ "$j" -lt "$replacement_count" ]; do
+            replacement_kind="$(yq eval ".live_service_validation.substitutions[$i].replacements[$j] | kind" "$yaml" 2>/dev/null)" ||
+                error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements[$j]: $yaml"
+            [ "$replacement_kind" = "map" ] ||
+                error "sample.yaml live_service_validation.substitutions[$i].replacements[$j] must be a mapping"
+            placeholder_tag="$(yq eval ".live_service_validation.substitutions[$i].replacements[$j].placeholder | tag" "$yaml" 2>/dev/null)" ||
+                error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements[$j].placeholder: $yaml"
+            [ "$placeholder_tag" = "!!str" ] ||
+                error "sample.yaml live_service_validation.substitutions[$i].replacements[$j].placeholder must be a non-empty string"
+            placeholder="$(yq eval ".live_service_validation.substitutions[$i].replacements[$j].placeholder" "$yaml" 2>/dev/null)" ||
+                error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements[$j].placeholder: $yaml"
+            printf '%s' "$placeholder" | grep -q '[^[:space:]]' ||
+                error "sample.yaml live_service_validation.substitutions[$i].replacements[$j].placeholder must be a non-empty string"
+            placeholder_pattern="$(escape_bash_pattern_literal "$placeholder")"
+
+            local has_env has_generate generate_tag generate_kind
+            has_env="$(yq eval ".live_service_validation.substitutions[$i].replacements[$j] | has(\"env\")" "$yaml" 2>/dev/null)" ||
+                error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements[$j]: $yaml"
+            has_generate="$(yq eval ".live_service_validation.substitutions[$i].replacements[$j] | has(\"generate\")" "$yaml" 2>/dev/null)" ||
+                error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements[$j]: $yaml"
+            if [ "$has_env" = "true" ] && [ "$has_generate" = "true" ]; then
+                error "sample.yaml live_service_validation.substitutions[$i].replacements[$j] must declare exactly one of env or generate"
+            fi
+
+            if [ "$has_generate" = "true" ]; then
+                generate_tag="$(yq eval ".live_service_validation.substitutions[$i].replacements[$j].generate | tag" "$yaml" 2>/dev/null)" ||
+                    error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements[$j].generate: $yaml"
+                [ "$generate_tag" = "!!str" ] ||
+                    error "sample.yaml live_service_validation.substitutions[$i].replacements[$j].generate must be a string"
+                generate_kind="$(yq eval ".live_service_validation.substitutions[$i].replacements[$j].generate" "$yaml" 2>/dev/null)" ||
+                    error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements[$j].generate: $yaml"
+                [ "$generate_kind" = "unique_name" ] ||
+                    error "unsupported live-service substitution generate kind: $generate_kind"
+                # One name per sample run, generated on first use and reused for every
+                # subsequent generate: unique_name replacement (and by cleanup_resources).
+                [ -n "$GENERATED_RESOURCE_NAME" ] || GENERATED_RESOURCE_NAME="$(generate_unique_resource_name)"
+                env_value="$GENERATED_RESOURCE_NAME"
+                GENERATE_UNIQUE_NAME_USED=true
+            elif [ "$has_env" = "true" ]; then
+                env_tag="$(yq eval ".live_service_validation.substitutions[$i].replacements[$j].env | tag" "$yaml" 2>/dev/null)" ||
+                    error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements[$j].env: $yaml"
+                [ "$env_tag" = "!!str" ] ||
+                    error "sample.yaml live_service_validation.substitutions[$i].replacements[$j].env must be a string"
+                env_name="$(yq eval ".live_service_validation.substitutions[$i].replacements[$j].env" "$yaml" 2>/dev/null)" ||
+                    error "failed to read sample.yaml live_service_validation.substitutions[$i].replacements[$j].env: $yaml"
+                [[ "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ||
+                    error "sample.yaml live_service_validation.substitutions[$i].replacements[$j].env is not a valid environment-variable name: $env_name"
+                [ -n "${!env_name:-}" ] ||
+                    error "required live-service substitution environment variable is missing or empty: $env_name"
+                env_value="${!env_name}"
+            else
+                error "sample.yaml live_service_validation.substitutions[$i].replacements[$j] must declare env or generate"
+            fi
+
+            case "${pending_contents[$slot]}" in
+                *$placeholder_pattern*) ;;
+                *) error "live-service substitution placeholder not found in $file: $placeholder" ;;
+            esac
+            local updated_content="" remaining_content="${pending_contents[$slot]}" prefix
+            while case "$remaining_content" in *$placeholder_pattern*) true ;; *) false ;; esac; do
+                prefix="${remaining_content%%$placeholder_pattern*}"
+                updated_content+="$prefix$env_value"
+                remaining_content="${remaining_content#"$prefix"}"
+                remaining_content="${remaining_content#"$placeholder"}"
+            done
+            pending_contents[$slot]="$updated_content$remaining_content"
+            j=$((j + 1))
+        done
+        i=$((i + 1))
+    done
+
+    # Commit: the whole declaration validated, so every rewrite can now be written.
+    pending_index=0
+    while [ "$pending_index" -lt "$pending_count" ]; do
+        printf '%s' "${pending_contents[$pending_index]}" >"${pending_paths[$pending_index]}" ||
+            error "live-service substitution failed to write file: ${pending_paths[$pending_index]}"
+        pending_index=$((pending_index + 1))
+    done
+}
+
 run_live_service_validation() {
     local yaml="$SAMPLE_DIR/sample.yaml"
     if [ ! -f "$yaml" ]; then
@@ -444,6 +677,59 @@ run_live_service_validation() {
         *) error "SKIP_PROVISION must be exactly true or false (got: $SKIP_PROVISION)" ;;
     esac
 
+    apply_live_service_substitutions
+
+    local cleanup_snapshot=""
+    if [ "$(yq eval '.live_service_validation | has("cleanup_resources")' "$yaml" 2>/dev/null)" = "true" ]; then
+        local cleanup_kind cleanup_count cleanup_index resource_kind resource_type_tag resource_type
+        local -a cleanup_args=()
+        cleanup_kind="$(yq eval '.live_service_validation.cleanup_resources | kind' "$yaml" 2>/dev/null)" ||
+            error "failed to read sample.yaml live_service_validation.cleanup_resources: $yaml"
+        [ "$cleanup_kind" = "seq" ] ||
+            error "sample.yaml live_service_validation.cleanup_resources must be a list"
+        cleanup_count="$(yq eval '.live_service_validation.cleanup_resources | length' "$yaml" 2>/dev/null)" ||
+            error "failed to read sample.yaml live_service_validation.cleanup_resources: $yaml"
+        [ "$cleanup_count" -gt 0 ] ||
+            error "sample.yaml live_service_validation.cleanup_resources must not be empty"
+
+        cleanup_index=0
+        while [ "$cleanup_index" -lt "$cleanup_count" ]; do
+            resource_kind="$(yq eval ".live_service_validation.cleanup_resources[$cleanup_index] | kind" "$yaml" 2>/dev/null)" ||
+                error "failed to read sample.yaml live_service_validation.cleanup_resources[$cleanup_index]: $yaml"
+            [ "$resource_kind" = "map" ] ||
+                error "sample.yaml live_service_validation.cleanup_resources[$cleanup_index] must be a mapping"
+            resource_type_tag="$(yq eval ".live_service_validation.cleanup_resources[$cleanup_index].type | tag" "$yaml" 2>/dev/null)" ||
+                error "failed to read sample.yaml live_service_validation.cleanup_resources[$cleanup_index].type: $yaml"
+            [ "$resource_type_tag" = "!!str" ] ||
+                error "sample.yaml live_service_validation.cleanup_resources[$cleanup_index].type must be a string"
+            resource_type="$(yq eval ".live_service_validation.cleanup_resources[$cleanup_index].type" "$yaml" 2>/dev/null)" ||
+                error "failed to read sample.yaml live_service_validation.cleanup_resources[$cleanup_index].type: $yaml"
+            [ "$resource_type" = "foundry_agent_versions" ] ||
+                error "unsupported live-service cleanup resource type: $resource_type"
+            cleanup_index=$((cleanup_index + 1))
+        done
+
+        # cleanup_resources needs no name of its own: it always tracks the single
+        # run-unique name this script generates for `generate: unique_name`. That
+        # only exists if a substitution actually consumed it, so a sample that
+        # declares cleanup_resources without wiring generate: unique_name into its
+        # source is a configuration error, not a silent no-op that would leak
+        # whatever name the sample really created.
+        [ "$GENERATE_UNIQUE_NAME_USED" = true ] ||
+            error "sample.yaml live_service_validation.cleanup_resources requires a substitutions replacement with generate: unique_name"
+        cleanup_args+=(--foundry-agent "$GENERATED_RESOURCE_NAME")
+
+        require_tool python3
+        require_tool az
+        cleanup_snapshot="$(mktemp)" || error "failed to create temporary live-resource snapshot"
+        echo "Capturing live-resource snapshot before sample command"
+        if ! python3 "$SCRIPT_DIR/live-resource-cleanup.py" snapshot \
+            --output "$cleanup_snapshot" "${cleanup_args[@]}"; then
+            rm -f "$cleanup_snapshot"
+            error "failed to capture live-resource cleanup snapshot"
+        fi
+    fi
+
     echo "Running live-service command (SKIP_PROVISION=$SKIP_PROVISION): $cmd"
     local live_service_log
     live_service_log="$(mktemp)" || error "failed to create temporary live-service command log"
@@ -452,6 +738,17 @@ run_live_service_validation() {
     live_service_rc=$?
     cat "$live_service_log"
     rm -f "$live_service_log"
+
+    if [ -n "$cleanup_snapshot" ]; then
+        echo "Removing resources created by the live-service command"
+        if ! python3 "$SCRIPT_DIR/live-resource-cleanup.py" cleanup \
+            --snapshot "$cleanup_snapshot"; then
+            rm -f "$cleanup_snapshot"
+            error "live-resource cleanup failed"
+        fi
+        rm -f "$cleanup_snapshot"
+    fi
+
     case "$live_service_rc" in
         0) pass ;;
         1) fail "sample.yaml live_service_validation.command reported sample failure (exit 1)" ;;

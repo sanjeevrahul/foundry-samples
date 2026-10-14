@@ -25,7 +25,7 @@ See [main.py](src/langgraph-files-responses/main.py) for the full implementation
 
 ### Agent Hosting
 
-The compiled graph is hosted with `ResponsesHostServer`, which exposes the OpenAI-compatible Responses endpoint at `/responses` and handles conversation history, streaming lifecycle events, and tool-call surfacing automatically.
+The async graph factory is registered in `langgraph.json` and loaded by `langchain_azure_ai.agents.hosting.run`, which exposes the OpenAI-compatible Responses endpoint at `/responses` and handles conversation history, streaming lifecycle events, and tool-call surfacing automatically.
 
 ## Option 1: Azure Developer CLI (`azd`)
 
@@ -43,6 +43,10 @@ The compiled graph is hosted with `ResponsesHostServer`, which exposes the OpenA
    ```bash
    azd auth login
    ```
+
+4. Python 3.12 or later.
+5. [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.11.7 or later,
+   installed and available on `PATH`.
 
 ### Initialize the agent project
 
@@ -112,30 +116,20 @@ azd ai agent invoke "Find the quarterly report under \`{cwd}/resources\` and tel
 
 ### Set up the Python virtual environment
 
-- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
-- Ensure `pip` is version 26.1 or newer (check with `pip --version`). Older versions fail to resolve this sample's dependencies. Upgrade if needed:
+- Install uv if it is not already available:
 
   ```bash
-  python -m pip install --upgrade pip
+  python -m pip install uv
   ```
 
-- Change to the agent source directory before installing dependencies:
+- From the sample root, sync the committed environment:
 
   ```bash
   cd src/langgraph-files-responses
+  uv sync --frozen
   ```
 
-- Install dependencies in the virtual environment. One transitive dependency ships as a pre-release, so pre-releases must be allowed when using `uv`:
-
-  ```bash
-  # use uv to accelerate
-  pip install uv
-  uv pip install --prerelease=allow -r requirements.txt
-
-  # or pure pip
-  pip install -r requirements.txt
-  ```
-
+- In VS Code, select `src/langgraph-files-responses/.venv` as the Python interpreter.
 ### Run and debug the agent
 
 Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
@@ -143,7 +137,7 @@ Press **F5** to start the agent. The agent starts and the **Agent Inspector** op
 ### Or run manually, then open the Inspector
 
 1. Set the required environment variables (including `TOOLBOX_NAME`), and sign in to Azure with the Azure CLI (`az login`).
-2. From `src/langgraph-files-responses`, start the agent: `python main.py`
+2. From `src/langgraph-files-responses`, start the agent: `uv run --no-sync python -m langchain_azure_ai.agents.hosting.run --protocol responses`
    (listens on `http://localhost:8088`).
 3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 

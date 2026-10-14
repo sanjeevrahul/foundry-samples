@@ -39,9 +39,9 @@ tools, and hosting configuration.
 
 Recovery depends on two persistent layers: Agent Server stores the durable
 invocation and protocol events, while the LangGraph checkpointer stores
-workflow state. Hosted runs use `FoundryCheckpointSaver` with Foundry State
-Store; local runs use `AsyncSqliteSaver`. Both modes retain graph state across
-a process restart.
+workflow state. `FoundryCheckpointSaver` uses Foundry State Store when hosted
+and automatically falls back to a file-backed local state store. Both modes
+retain graph state across a process restart.
 
 ### Agent hosting
 
@@ -55,7 +55,8 @@ continue the latest completed checkpoint in that session.
 ### Prerequisites
 
 - Python 3.12 or later
-- [`uv`](https://docs.astral.sh/uv/)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.11.7 or later,
+  installed and available on `PATH`
 - [Azure Developer CLI (`azd`)](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd)
 - Azure CLI authenticated with `az login`
 - A Microsoft Foundry project and model deployment accessible through
@@ -97,8 +98,8 @@ In another terminal, start the Textual CUI:
 
 ```bash
 cd client
-uv sync
-uv run python client.py
+uv sync --frozen
+uv run --no-sync python client.py
 ```
 
 Ask it to book a trip. The CUI displays the proposed `book_trip` arguments
@@ -132,8 +133,8 @@ and Python extensions. Install the agent dependencies and start the host:
 
 ```bash
 cd src/langchain-azure-resilient-invocations
-python -m pip install -r requirements.txt
-python main.py
+uv sync --frozen
+uv run --no-sync python main.py
 ```
 
 Then open **Agent Inspector** in VS Code
@@ -159,7 +160,7 @@ Start the CUI in another terminal:
 
 ```bash
 cd client
-uv run python client.py
+uv run --no-sync python client.py
 ```
 
 Enter:
@@ -170,16 +171,15 @@ Call simulate_crash, recover, and report the result.
 
 The tool terminates the host on its first execution. Restart the host with the
 same command before the client timeout expires. The CUI polls the same
-invocation and the graph resumes from its SQLite checkpoint; do not submit the
-original request again. By default, Agent Server uses `~/.agentserver` and
-LangGraph uses
-`src/langchain-azure-resilient-invocations/checkpoints.sqlite`.
+invocation and the graph resumes from its local checkpoint; do not submit the
+original request again. By default, Agent Server and LangGraph persist local
+state beneath `~/.agentserver`.
 
 The same flow works against a deployed Foundry agent:
 
 ```bash
 cd client
-uv run python client.py --url "<hosted-invocations-endpoint>" --auth
+uv run --no-sync python client.py --url "<hosted-invocations-endpoint>" --auth
 ```
 
 After the hosted process restarts, the CUI polls the same invocation and the
@@ -285,16 +285,14 @@ and use durable stores for any additional application state.
 
 | Variable                         | Default              | Purpose                                                                                   |
 | -------------------------------- | -------------------- | ----------------------------------------------------------------------------------------- |
-| `PORT`                           | `8088`               | HTTP port for the agent host.                                                             |
-| `AGENTSERVER_STATE_ROOT`         | `~/.agentserver`     | Local durable task, invocation, and protocol-event state. Reuse it across local restarts. |
-| `CHECKPOINT_DB`                  | `checkpoints.sqlite` | Local LangGraph checkpoint database. Ignored when hosted on Foundry.                      |
-| `STEERABLE_CONVERSATIONS`        | `false`              | Enable server-side active-turn steering support.                                          |
-| `FOUNDRY_PROJECT_ENDPOINT`       | None                 | Required Foundry project endpoint.                                                        |
-| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | None                 | Required Foundry model deployment name.                                                   |
+| `PORT`                           | `8088`           | HTTP port for the agent host.                                                     |
+| `AGENTSERVER_STATE_ROOT`         | `~/.agentserver` | Local durable task, invocation, protocol-event, and LangGraph checkpoint state.   |
+| `STEERABLE_CONVERSATIONS`        | `false`          | Enable server-side active-turn steering support.                                  |
+| `FOUNDRY_PROJECT_ENDPOINT`       | None             | Required Foundry project endpoint.                                                |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | None             | Required Foundry model deployment name.                                           |
 
 Hosted checkpoint items use Foundry State Store's default 30-day sliding TTL.
-Local checkpoints remain in the configured SQLite database under the agent
-application directory by default.
+Local checkpoints remain beneath `${AGENTSERVER_STATE_ROOT}/state_stores`.
 
 ## Deploying the Agent to Foundry
 
@@ -359,5 +357,5 @@ Run CUI against a deployed Microsoft Foundry agent with Azure authentication:
 
 ```bash
 cd client
-uv run python client.py --url "https://<account>.services.ai.azure.com/api/projects/<project>/agents/<agent-name>/endpoint/protocols/invocations?api-version=v1" --auth
+uv run --no-sync python client.py --url "https://<account>.services.ai.azure.com/api/projects/<project>/agents/<agent-name>/endpoint/protocols/invocations?api-version=v1" --auth
 ```

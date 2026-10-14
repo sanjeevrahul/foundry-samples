@@ -12,7 +12,7 @@ Microsoft has no responsibility to you or others with respect to any of these sa
 
 This sample hosts a LangGraph ReAct agent on Microsoft Foundry over the
 Responses protocol using
-[`langchain_azure_ai.agents.hosting.ResponsesHostServer`](https://github.com/langchain-ai/langchain-azure/tree/main/libs/azure-ai/langchain_azure_ai/agents/hosting).
+[`langchain_azure_ai.agents.hosting.run`](https://github.com/langchain-ai/langchain-azure/tree/main/libs/azure-ai/langchain_azure_ai/agents/hosting).
 It loads tools from a Foundry Toolbox through
 `langchain_azure_ai.tools.AzureAIProjectToolbox`.
 
@@ -30,20 +30,20 @@ collide with shared toolboxes in the Foundry project.
 1. The Foundry infrastructure layer provisions the project and model.
 2. The dependent Bicep layer provisions the connections before the toolbox and
    hosted agent are deployed.
-3. `ResponsesHostServer` exposes the OpenAI-compatible `/responses` endpoint
-   and manages Responses streaming and conversation history.
-4. On the first request, `AzureAIProjectToolbox` resolves `TOOLBOX_NAME` and
-   loads the toolbox tools as LangChain tools.
+3. `hosting.run` loads the graph factory from `langgraph.json`, exposes the
+   OpenAI-compatible `/responses` endpoint, and manages Responses streaming and
+   conversation history.
+4. The async graph factory uses `AzureAIProjectToolbox` to resolve
+   `TOOLBOX_NAME` and load the toolbox tools as LangChain tools.
 5. `langchain.agents.create_agent` builds the LangGraph ReAct agent.
 6. If a connection requires consent, the tool error handler recognizes MCP
    error `-32006` and returns the validated consent URL to the caller.
 
-Tool loading is lazy so the hosted agent can pass readiness checks before an
-upstream MCP server finishes warming up.
-
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.13+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.11.7 or later,
+  installed and available on `PATH`
 - Azure Developer CLI (`azd`) 1.25 or later
 - The Microsoft Foundry `azd` extension
 - An Azure subscription where you can create Foundry resources
@@ -90,9 +90,8 @@ From `src/toolbox-langgraph-user-identity`, create a local environment:
 
 ```bash
 cp .env.example .env
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install uv
+uv sync --frozen
 ```
 
 Set `FOUNDRY_PROJECT_ENDPOINT`, `AZURE_AI_MODEL_DEPLOYMENT_NAME`, and
@@ -102,7 +101,7 @@ toolbox declared by the sample; running `azd provision` creates them.
 Start the server:
 
 ```bash
-python main.py
+uv run --no-sync python -m langchain_azure_ai.agents.hosting.run --protocol responses
 ```
 
 In another terminal, invoke the local Responses endpoint:

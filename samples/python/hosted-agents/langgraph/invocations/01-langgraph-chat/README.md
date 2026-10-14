@@ -8,7 +8,7 @@ Unlike the Responses protocol, the Invocations protocol does **not** surface int
 
 ### LangGraph Agent
 
-The agent is built with `langchain.agents.create_agent(model, tools=[...], checkpointer=MemorySaver())`, which returns a compiled LangGraph runnable implementing the standard ReAct loop. The agent registers two local tools:
+The agent is built with `langchain.agents.create_agent(model, tools=[...], checkpointer=FoundryCheckpointSaver(...))`, which returns a compiled LangGraph runnable implementing the standard ReAct loop. The agent registers two local tools:
 
 - `get_current_time` — returns the current UTC time.
 - `calculator` — evaluates a simple math expression.
@@ -17,9 +17,9 @@ See [main.py](src/langgraph-chat-invocations/main.py) for the full implementatio
 
 ### Agent Hosting
 
-The compiled graph is hosted with `InvocationsHostServer`, which exposes the Invocations endpoint at `/invocations` and supports both non-streaming (single JSON response) and streaming (`{"stream": true}` SSE token deltas) modes.
+The exported graph is registered in `langgraph.json` and loaded by `langchain_azure_ai.agents.hosting.run`, which exposes the Invocations endpoint at `/invocations` and supports both non-streaming (single JSON response) and streaming (`{"stream": true}` SSE token deltas) modes.
 
-Multi-turn continuity is provided by the LangGraph `MemorySaver` checkpointer: the host wires the resolved `agent_session_id` into `RunnableConfig.configurable.thread_id`, so each session's history is preserved across turns. Replace `MemorySaver` with a durable checkpointer (Redis, Cosmos DB, etc.) for production.
+Multi-turn continuity is provided by `FoundryCheckpointSaver`: the host wires the resolved `agent_session_id` into `RunnableConfig.configurable.thread_id`, so each session's history is preserved across turns and process restarts. The saver uses Foundry State Store when hosted and a local file-backed store during local development.
 
 ## Option 1: Azure Developer CLI (`azd`)
 
@@ -37,6 +37,10 @@ Multi-turn continuity is provided by the LangGraph `MemorySaver` checkpointer: t
    ```bash
    azd auth login
    ```
+
+4. Python 3.12 or later.
+5. [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.11.7 or later,
+   installed and available on `PATH`.
 
 ### Initialize the agent project
 
@@ -125,24 +129,20 @@ azd ai agent invoke '{"message": "What time is it right now?"}'
 
 ### Set up the Python virtual environment
 
-- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
-- Ensure `pip` is version 26.1 or newer (check with `pip --version`). Older versions fail to resolve this sample's dependencies. Upgrade if needed:
+- Install uv if it is not already available:
 
   ```bash
-  python -m pip install --upgrade pip
+  python -m pip install uv
   ```
 
-- Install dependencies in the virtual environment. One transitive dependency ships as a pre-release, so pre-releases must be allowed when using `uv`:
+- From the sample root, sync the committed environment:
 
   ```bash
-  # use uv to accelerate
-  pip install uv
-  uv pip install --prerelease=allow -r requirements.txt
-
-  # or pure pip
-  pip install -r requirements.txt
+  cd src/langgraph-chat-invocations
+  uv sync --frozen
   ```
 
+- In VS Code, select `src/langgraph-chat-invocations/.venv` as the Python interpreter.
 ### Run and debug the agent
 
 Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
@@ -150,7 +150,7 @@ Press **F5** to start the agent. The agent starts and the **Agent Inspector** op
 ### Or run manually, then open the Inspector
 
 1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
-2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+2. Start the agent: `uv run --no-sync python -m langchain_azure_ai.agents.hosting.run --protocol invocations` (listens on `http://localhost:8088`).
 3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 
 ### Deploy to Foundry

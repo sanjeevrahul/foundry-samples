@@ -23,7 +23,7 @@ This agent uses four tools:
 3. **Read File Tool (`read_file`)** – Reads the contents of a specified file.
 4. **Code Interpreter Tool (`code_interpreter`)** – Allows the agent to execute Python code in a safe.
 
-> In this sample, the filesystem tools are function tools defined in Python using the `@tool` decorator from the Agent Framework. The code interpreter tool is a managed tool provided by [Foundry Toolbox](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/tools/toolbox). Learn more about foundry toolbox integration with hosted agents with this [sample](../04_foundry_toolbox/).
+> In this sample, the filesystem tools are function tools defined in Python using the `@tool` decorator from the Agent Framework. The code interpreter tool is a managed tool provided by [Foundry Toolbox](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/tools/toolbox). Learn more about foundry toolbox integration with hosted agents with this [sample](../04-foundry-toolbox/).
 
 ## Option 1: Azure Developer CLI (`azd`)
 
@@ -59,6 +59,17 @@ If you don't already have a Foundry project and model deployment:
 azd provision
 ```
 
+### Create the Toolbox
+
+The `agent-tools` service is a Foundry Toolbox declared in `azure.yaml`.
+`azd provision` creates the Foundry project and model deployment, but Toolbox
+services are applied during `azd deploy`. Create the Toolbox before running
+the local agent:
+
+```bash
+azd deploy
+```
+
 ### Run the agent locally
 
 ```bash
@@ -67,7 +78,9 @@ azd ai agent run
 
 The agent host will start on `http://localhost:8088`.
 
-> This sample requires a Foundry Toolbox. The `TOOLBOX_NAME` environment variable is configured in `azure.yaml` and will be prompted during `azd ai agent init`.
+> This sample requires the `agent-tools` Foundry Toolbox. The
+> `TOOLBOX_NAME` environment variable is configured in `azure.yaml` and will
+> be prompted during `azd ai agent init`.
 
 ### Invoke the local agent
 
@@ -81,7 +94,7 @@ azd ai agent invoke --local "Find the quarterly report under `{cwd}/resources` a
 
 ### Deploy to Foundry
 
-Once tested locally, deploy to Microsoft Foundry:
+After testing locally, deploy updated source to Microsoft Foundry:
 
 ```bash
 azd deploy
@@ -111,17 +124,13 @@ azd ai agent invoke --new-session "Hi!"
 
 ### Set up the Python virtual environment
 
-- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
-- Install dependencies in the virtual environment:
+- With Python 3.13 or later and [pipx](https://pipx.pypa.io/stable/installation/), install uv outside the project environment, then let uv create and synchronize the locked environment:
 
   ```bash
-  # use uv to accelerate
-  pip install uv
-  uv pip install -r requirements.txt
-
-  # or pure pip
-  pip install -r requirements.txt
+   pipx install uv==0.11.7
+   uv sync --frozen --python 3.13
   ```
+- Open the Command Palette (`Ctrl+Shift+P`), run **Python: Select Interpreter**, and select the `.venv` created by uv.
 
 ### Configure the toolbox
 
@@ -140,7 +149,7 @@ Press **F5** to start the agent. The agent starts and the **Agent Inspector** op
 ### Or run manually, then open the Inspector
 
 1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
-2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+2. Start the agent: `uv run --no-sync python main.py` (listens on `http://localhost:8088`).
 3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 
 ### Deploy to Foundry

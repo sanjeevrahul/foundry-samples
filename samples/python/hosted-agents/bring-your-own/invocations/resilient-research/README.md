@@ -9,7 +9,7 @@ The agent runs a multi-phase deep-research plan. Each phase issues several strea
 It showcases four capabilities that matter for autonomous hosted agents:
 
 - **Long-running autonomous work** — a plan of many streaming LLM sub-calls that runs on its own.
-- **Crash resilience** — per-sub-call watermarks in `ctx.metadata` plus a file-backed checkpoint store; on restart the framework re-invokes the interrupted turn with `ctx.entry_mode == "recovered"` and the handler resumes from the last completed sub-call (worst case: one wasted sub-call, the one actively streaming when the process died).
+- **Crash resilience** — per-sub-call watermarks and in-flight text share one application-owned `FoundryStateStore` item with retention matching task recovery; on restart the framework re-invokes the interrupted turn with `ctx.entry_mode == "recovered"` and the handler resumes from the last completed sub-call (worst case: one wasted sub-call, the one actively streaming when the process died).
 - **Resumable streaming** — events persist to disk; a client that disconnects can reconnect via `GET` with `?last_event_id=N` and receive the pre-crash events, a `recovered` marker, and the post-crash continuation.
 - **Steering** — POST a new topic while a run is in progress and the current turn winds down cleanly at the next checkpoint; the framework re-enters with the new topic.
 
@@ -45,11 +45,17 @@ Each turn is one resilient task per session (`task_id = research-<session_id>`);
 | `GET /invocations/{invocation_id}?agent_session_id=<id>` | JSON snapshot of the task's current status/payload. |
 | `POST /invocations/{invocation_id}/cancel?agent_session_id=<id>` | Cooperatively cancel the running task. |
 
+Polling reports `running`, `completed`, `failed`, or `cancelled` from the
+invocation's durable terminal marker. It does not infer an older invocation's
+result from the shared multi-turn task status.
+
 ## Option 1: Azure Developer CLI (`azd`)
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.11.7 or later,
+  installed and available on `PATH`
 - Azure CLI installed and authenticated (`az login`)
 - Azure OpenAI resource with a deployed model
 
@@ -81,7 +87,7 @@ curl -X POST "http://localhost:8088/invocations?agent_session_id=research-1" \
   -d '{"topic": "quantum error correction"}'
 # -> 202 {"status": "started", "invocation_id": "<inv>", ...}
 curl "http://localhost:8088/invocations/<inv>?agent_session_id=research-1"
-# -> {"status": "in_progress", "payload": {...}}
+# -> {"status": "running", "state": {...}}
 
 # Reconnect a dropped stream, skipping events already seen.
 curl -N "http://localhost:8088/invocations/<inv>?agent_session_id=research-1&last_event_id=42" \
@@ -136,17 +142,15 @@ For the full deployment guide, see [Azure AI Foundry hosted agents](https://aka.
 
 ### Set up the Python virtual environment
 
-- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
-- Install dependencies in the virtual environment:
+- With Python 3.12 or later and [pipx](https://pipx.pypa.io/stable/installation/), install uv outside the project environment, then let uv create and synchronize the locked environment:
 
   ```bash
-  # use uv to accelerate
-  pip install uv
-  uv pip install -r requirements.txt
+  cd src/resilient-research
 
-  # or pure pip
-  pip install -r requirements.txt
+  pipx install uv==0.11.7
+  uv sync --frozen --python 3.12
   ```
+- Open the Command Palette (`Ctrl+Shift+P`), run **Python: Select Interpreter**, and select `src/resilient-research/.venv`.
 
 ### Run and debug the agent
 
@@ -155,7 +159,7 @@ Press **F5** to start the agent. The agent starts and the **Agent Inspector** op
 ### Or run manually, then open the Inspector
 
 1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
-2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+2. From `src/resilient-research`, start the agent: `uv run --no-sync python main.py` (listens on `http://localhost:8088`).
 3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 
 ### Deploy to Foundry
@@ -172,7 +176,7 @@ Press **F5** to start the agent. The agent starts and the **Agent Inspector** op
 | --- | --- |
 | `src/resilient-research/main.py` | HTTP host — wires the resilient task to the invocations protocol (POST-SSE, GET-SSE/poll, cancel) and bootstraps file-backed streaming. |
 | `src/resilient-research/agent.py` | The `@multi_turn_task` research handler — phases, streaming sub-calls, per-sub-call checkpointing, cooperative wind-down. |
-| `src/resilient-research/store.py` | Minimal file-backed checkpoint store for in-flight phase text (bulk data lives here, not in `ctx.metadata`). |
+| `src/resilient-research/store.py` | Minimal `FoundryStateStore`-backed persistence for invocation checkpoints and terminal markers, with a local-file fallback. |
 
 ## Troubleshooting
 

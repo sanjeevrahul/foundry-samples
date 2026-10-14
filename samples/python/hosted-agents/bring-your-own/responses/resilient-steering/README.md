@@ -9,7 +9,7 @@ Two opt-in options drive the behavior (both default to `False`):
 - **`resilient_background=True`** — a `store=true, background=true` response survives process crashes. The framework persists handler progress and re-invokes the handler on the next process start if a prior attempt did not reach a terminal event.
 - **`steerable_conversations=True`** — a client can POST a new turn on an in-flight conversation. The running handler is woken via the cancellation signal (distinguished by `context.pending_input_count > 0`), winds the current turn down cleanly, and the framework re-invokes with the new input.
 
-Recovery here is deliberately **naive**: the handler wraps a non-deterministic upstream (an LLM) and does **not** checkpoint partial output, so recovery needs no special code — every entry builds a fresh stream and re-runs the turn from scratch. The fresh `response.in_progress` (empty output) is the client-visible reset. A `turn_count` watermark on `context.conversation_chain_metadata` survives crashes and turn boundaries.
+Recovery here is deliberately **naive**: the handler wraps a non-deterministic upstream (an LLM) and does **not** checkpoint partial output, so recovery needs no special code — every entry builds a fresh stream and re-runs the turn from scratch. The fresh `response.in_progress` (empty output) is the client-visible reset. A `turn_count` watermark in `FoundryStateStore`, keyed by `context.conversation_chain_id`, survives crashes and turn boundaries.
 
 The LLM is **simulated** so the sample runs offline with no credentials — replace `_simulate_llm_stream` with a real model call to make it live.
 
@@ -38,7 +38,9 @@ POST /responses {input, store:true, background:true}
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.11.7 or later,
+  installed and available on `PATH`
 - Azure CLI installed and authenticated (`az login`)
 
 ### Run the agent locally
@@ -108,17 +110,15 @@ For the full deployment guide, see [Azure AI Foundry hosted agents](https://aka.
 
 ### Set up the Python virtual environment
 
-- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment (or **Python: Select Interpreter** to use an existing one).
-- Install dependencies:
+- With Python 3.12 or later and [pipx](https://pipx.pypa.io/stable/installation/), install uv outside the project environment, then let uv create and synchronize the locked environment:
 
   ```bash
-  # use uv to accelerate
-  pip install uv
-  uv pip install -r requirements.txt
+  cd src/resilient-steering
 
-  # or pure pip
-  pip install -r requirements.txt
+  pipx install uv==0.11.7
+  uv sync --frozen --python 3.12
   ```
+- Open the Command Palette (`Ctrl+Shift+P`), run **Python: Select Interpreter**, and select `src/resilient-steering/.venv`.
 
 ### Run and debug the agent
 
@@ -127,7 +127,7 @@ Press **F5** to start the agent. The **Agent Inspector** opens automatically —
 ### Or run manually, then open the Inspector
 
 1. Sign in to Azure with the Azure CLI (`az login`).
-2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+2. From `src/resilient-steering`, start the agent: `uv run --no-sync python main.py` (listens on `http://localhost:8088`).
 3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message.
 
 ### Deploy to Foundry

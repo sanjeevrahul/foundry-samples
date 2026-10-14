@@ -1,17 +1,28 @@
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects import AIProjectClient
+from azure.ai.projects.models import PromptAgentDefinition
 
-# Format: "https://resource_name.ai.azure.com/api/projects/project_name"
-PROJECT_ENDPOINT = "your_project_endpoint"
-AGENT_NAME = "your_agent_name"
+# Format: "https://resource_name.services.ai.azure.com/api/projects/project_name"
+FOUNDRY_PROJECT_ENDPOINT = "your_project_endpoint"
+FOUNDRY_AGENT_NAME = "your-agent-name"
 
 # Create project and openai clients to call Foundry API
 project = AIProjectClient(
-    endpoint=PROJECT_ENDPOINT,
+    endpoint=FOUNDRY_PROJECT_ENDPOINT,
     credential=DefaultAzureCredential(),
 )
+
+# Create the agent (or a new version, if it already exists)
+project.agents.create_version(
+    agent_name=FOUNDRY_AGENT_NAME,
+    definition=PromptAgentDefinition(
+        model="gpt-5-mini",
+        instructions="You are a helpful assistant that answers general questions",
+    ),
+)
+
 # Get an OpenAI client pre-bound to the specified agent
-openai = project.get_openai_client(agent_name=AGENT_NAME)
+openai = project.get_openai_client(agent_name=FOUNDRY_AGENT_NAME)
 
 # Create a conversation for multi-turn chat
 conversation = openai.conversations.create()

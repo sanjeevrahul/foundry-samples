@@ -7,10 +7,11 @@ A [LangGraph](https://langchain-ai.github.io/langgraph/) agent hosted using the 
 > point `langgraph.json` at its exported graph, and launch the hosting
 > entrypoint with the desired protocol.
 
-Multi-turn continuity is provided by a LangGraph `MemorySaver`
-checkpointer: the resolved `agent_session_id` is forwarded to the graph
-as `RunnableConfig.configurable.thread_id`, so each session's history is
-preserved in process memory.
+Multi-turn continuity is provided by `FoundryCheckpointSaver`: the resolved
+`agent_session_id` is forwarded to the graph as
+`RunnableConfig.configurable.thread_id`, so each session's history is preserved
+across process restarts. The saver uses Foundry State Store when hosted and a
+local file-backed store during local development.
 
 ## How It Works
 
@@ -19,8 +20,9 @@ preserved in process memory.
 The agent uses `langchain_openai.ChatOpenAI` with an Azure bearer token
 provider from `DefaultAzureCredential` and an OpenAI-compatible endpoint
 from `azure.ai.projects.AIProjectClient` (`az login` is enough for local
-development). The graph is the same no-tool `create_agent` graph with
-`MemorySaver` used by the other minimal Invocations samples in this repo.
+development). The graph is a minimal no-tool `create_agent` graph that uses the
+same durable Foundry checkpointing approach as the other Invocations samples in
+this repo.
 
 See [src/langgraph-run-invocations/main.py](src/langgraph-run-invocations/main.py)
 for the graph and [src/langgraph-run-invocations/langgraph.json](src/langgraph-run-invocations/langgraph.json)
@@ -57,6 +59,10 @@ selects `invocations` in both its local command and Docker image.
    ```bash
    azd auth login
    ```
+
+4. Python 3.12 or later.
+5. [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.11.7 or later,
+   installed and available on `PATH`.
 
 ### Initialize the agent project
 
@@ -118,24 +124,25 @@ azd deploy
 
 ### Set up the Python virtual environment
 
-- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the project.
-- Ensure `pip` is version 26.1 or newer (check with `pip --version`). Older versions fail to resolve this sample's dependencies. Upgrade if needed:
+- Install uv if it is not already available:
 
   ```bash
-  python -m pip install --upgrade pip
+  python -m pip install uv
   ```
 
-- Install dependencies in the virtual environment:
+- From the sample root, sync the committed environment:
 
   ```bash
-  pip install -r src/langgraph-run-invocations/requirements.txt
+  cd src/langgraph-run-invocations
+  uv sync --frozen
   ```
 
+- In VS Code, select `src/langgraph-run-invocations/.venv` as the Python interpreter.
 ### Run locally
 
 ```bash
 cd src/langgraph-run-invocations
-python -m langchain_azure_ai.agents.hosting.run --protocol invocations
+uv run --no-sync python -m langchain_azure_ai.agents.hosting.run --protocol invocations
 ```
 
 Then invoke it:

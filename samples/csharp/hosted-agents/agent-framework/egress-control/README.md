@@ -2,6 +2,16 @@
 
 An [Agent Framework](https://github.com/microsoft/agent-framework) C# agent for testing **managed egress proxy policies** on Microsoft Foundry hosted agents. It is the .NET counterpart to the [Python egress-control sample](../../../../../python/hosted-agents/agent-framework/responses/18-egress-control/README.md).
 
+## Administrator policy authoring (control plane)
+
+To restrict **which RAI egress policies developers may save**, use the
+[control-plane Azure Policy walkthrough](control-plane/README.md). It includes
+a small exact-host policy definition, assignment parameters, and allowed/denied RAI
+requests. No published built-in, model deployment, or running agent is required.
+The walkthrough demonstrates an ARM policy denial, not APES or runtime traffic
+enforcement. Run it on a disposable account separately from the runtime scenarios
+below; the administrator restrictions intentionally reject some scenario policies.
+
 ## How it works
 
 The agent registers an async C# `EgressTest` function tool with Agent Framework and hosts it through the Responses protocol. The tool uses `HttpClient` to make outbound requests and returns the status, response headers, and up to 4,000 characters of the body. Each request includes `X-Test-Marker` and a distinct `User-Agent`, allowing egress policies to demonstrate Allow, Deny, Transform, and Rewrite behavior.
@@ -48,9 +58,13 @@ The layered infrastructure in `azure.yaml` provisions the Foundry project first,
 
 ```bash
 mkdir my-dotnet-egress-agent && cd my-dotnet-egress-agent
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/agent-framework/egress-control/azure.yaml
+azd ai agent init --deploy-mode container -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/agent-framework/egress-control/azure.yaml
 azd provision
 ```
+
+With `azure.ai.agents` 1.0.0-beta.16, the provisioned `RAI_POLICY_ID` is not interpolated inside
+`policies.raiPolicyName`. Before `azd deploy`, run `azd env get-value RAI_POLICY_ID` and replace
+`${RAI_POLICY_ID}` in the generated `azure.yaml` with that full ARM resource ID.
 
 ### Run and invoke locally
 
@@ -109,6 +123,11 @@ For complete Allow, Deny, Transform, Rewrite, Audit, and managed-identity policy
 - **`FOUNDRY_PROJECT_ENDPOINT environment variable is not set`**: run through `azd ai agent run`, or set the endpoint in `.env`.
 - **A request unexpectedly fails TLS validation**: use `EGRESS_TEST_VERIFY_TLS=false` only for a TLS-intercepting Full inspection policy.
 - **Both allowed and denied destinations succeed locally**: egress policies apply to the deployed hosted-agent container, not the local process.
+- **Deploy says the RAI policy must be a fully qualified ARM resource ID**: materialize the
+  provisioned `RAI_POLICY_ID` in the generated `azure.yaml` as described above.
+- **Cleanup when using an existing project**: do not run `azd down`, because it can attempt to delete
+  the shared resource group. Delete the test agent with `azd ai agent delete --force`, then delete
+  only the provisioned RAI policy with authenticated `az rest`.
 
 ## Next steps
 

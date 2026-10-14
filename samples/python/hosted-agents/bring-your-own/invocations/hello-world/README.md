@@ -45,8 +45,11 @@ Before running this sample, ensure you have:
 2. **Azure CLI**
    - Installed and authenticated: `az login`
 
-3. **Python 3.10 or later**
+3. **Python 3.12 or later**
    - Verify your version: `python --version`
+
+4. **uv 0.11.7 or later**
+   - [Install uv](https://docs.astral.sh/uv/getting-started/installation/) and verify it is available on `PATH`: `uv --version`
 
 > [!NOTE]
 > You do **not** need an existing [Microsoft Foundry](https://learn.microsoft.com/en-us/azure/ai-foundry/what-is-foundry?view=foundry) project or model deployment to get started — `azd provision` creates them for you. If you already have a project, see the [note below](#using-azd) on how to target it.
@@ -78,9 +81,10 @@ export $(grep -v '^#' .env | xargs)
 > If using `azd ai agent run`, dependencies are installed automatically — skip to [Running the Sample](#running-the-sample).
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+cd src/hello-world-python-invocations
+
+pipx install uv==0.11.7
+uv sync --frozen --python 3.12
 ```
 
 ### Running the Sample
@@ -97,17 +101,15 @@ Run and test hosted agents locally with the Azure Developer CLI (`azd`) or the F
 
 **Set up the Python virtual environment**
 
-- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
-- Install dependencies in the virtual environment:
+- With Python 3.12 or later and [pipx](https://pipx.pypa.io/stable/installation/), install uv outside the project environment, then let uv create and synchronize the locked environment:
 
   ```bash
-  # use uv to accelerate
-  pip install uv
-  uv pip install -r requirements.txt
+  cd src/hello-world-python-invocations
 
-  # or pure pip
-  pip install -r requirements.txt
+  pipx install uv==0.11.7
+  uv sync --frozen --python 3.12
   ```
+- Open the Command Palette (`Ctrl+Shift+P`), run **Python: Select Interpreter**, and select `src/hello-world-python-invocations/.venv`.
 
 **Run and debug the agent**
 
@@ -116,7 +118,7 @@ Press **F5** to start the agent. The agent starts and the **Agent Inspector** op
 **Or run manually, then open the Inspector**
 
 1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
-2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+2. From `src/hello-world-python-invocations`, start the agent: `uv run --no-sync python main.py` (listens on `http://localhost:8088`).
 3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 
 </details>
@@ -177,7 +179,9 @@ Each response is a stream of SSE events: `token` events with incremental text, f
 If running without `azd`, set environment variables manually (see [Environment Variables](#environment-variables)), then:
 
 ```bash
-python main.py
+cd src/hello-world-python-invocations
+
+uv run --no-sync python main.py
 ```
 
 ### Deploying the Agent to Microsoft Foundry
